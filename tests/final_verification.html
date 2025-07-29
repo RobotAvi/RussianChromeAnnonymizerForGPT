@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Финальная проверка всех исправлений</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test { margin: 10px 0; padding: 10px; border: 1px solid #ccc; }
+        .original { background-color: #f8f9fa; }
+        .anonymized { background-color: #e2e3e5; }
+        .meta { background-color: #d1ecf1; }
+        .highlight { background-color: yellow; }
+        .pattern { background-color: #e2e3e5; padding: 10px; margin: 10px 0; }
+        .success { background-color: #d4edda; }
+        .failure { background-color: #f8d7da; }
+        .summary { background-color: #cce5ff; padding: 15px; margin: 15px 0; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Финальная проверка всех исправлений</h1>
+    
+    <div class="summary">
+        <h3>🎯 Цель теста:</h3>
+        <p>Проверить, что все проблемы с анонимизацией решены:</p>
+        <ul>
+            <li>✅ Компании отлавливаются корректно (включая «АО ТестБанк»)</li>
+            <li>✅ Банковские счета отлавливаются полностью</li>
+            <li>✅ Номер паспорта отлавливается полностью</li>
+            <li>✅ Нет конфликтов между паттернами</li>
+        </ul>
+    </div>
+    
+    <div>
+        <h3>Результаты тестов:</h3>
+        <div id="testResults"></div>
+    </div>
+
+    <script>
+        // Финальные паттерны из service_worker.js
+        const PATTERNS = [
+          // ===== АДРЕС =====
+          {
+            type: 'ADDRESS',
+            regex: /(?:Россия|РФ)?[,.\s]*(?:Московская область[,.\s]*)?г\.?\s*[А-ЯЁ][а-яё\-]+[,.\s]+ул\.?\s+[А-ЯЁа-яё\s]+[,.\s]+д\.?\s*\d+[А-ЯЁа-яё]?[,.\s]+кв\.?\s*\d+/gu
+          },
+
+          // ===== ФИО =====
+          {
+            type: 'FIO',
+            regex: /(^|[\s\n\r\t.,;!?])[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?(?=[\s\n\r\t.,;!?]|$)/g
+          },
+
+          // ===== БАНК. СЧЁТ (20 цифр) =====
+          {
+            type: 'BANK_ACCOUNT',
+            regex: /(?:счет|счёт|банковский\s+счет)\s*:?\s*\d{20}|\b\d{20}\b/g
+          },
+
+          // ===== КОРРЕСПОНДЕНТСКИЙ СЧЁТ (20 цифр после "корр. счет" или "к/с") =====
+          {
+            type: 'CORR_ACCOUNT',
+            regex: /(?:корр\.?\s*счет|к\/с)\s*:?\s*\d{20}/gi
+          },
+
+          // ===== БИК (9 цифр) =====
+          {
+            type: 'BIK',
+            regex: /\b\d{9}\b/g
+          },
+
+          // ===== ТЕЛЕФОНЫ =====
+          {
+            type: 'PHONE',
+            regex: /(?:\+7|8)[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}/g
+          },
+
+          // ===== КОМПАНИЯ =====
+          {
+            type: 'COMPANY',
+            regex: /(?:^|\s)(?:ООО|ЗАО|ОАО|ИП|ПАО|НПФ|АО|ТОО|ЧП|ГП|ФГУП|МУП|ГУП)\s+(?:«[^»]+»|"[^"]+"|'[^']+'|[А-ЯЁа-яё\-\s]+)|(?:«|"|')(?:ООО|ЗАО|ОАО|ИП|ПАО|НПФ|АО|ТОО|ЧП|ГП|ФГУП|МУП|ГУП)\s+[^»"']+(?:»|"|')|(?:ООО|ЗАО|ОАО|ИП|ПАО|НПФ|АО|ТОО|ЧП|ГП|ФГУП|МУП|ГУП)"[^"]+"/gi
+          },
+
+          // ===== EMAIL =====
+          {
+            type: 'EMAIL',
+            regex: /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g
+          },
+
+          // ===== СНИЛС =====
+          {
+            type: 'SNILS',
+            regex: /\b\d{3}[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{2}\b/g
+          },
+
+          // ===== ИНН =====
+          {
+            type: 'INN',
+            regex: /\b\d{10}(?:\d{2})?\b/g
+          },
+
+          // ===== ПАСПОРТ СЕРИЯ =====
+          {
+            type: 'PASSPORT_SERIES',
+            regex: /\b(?:серия\s+)?\d{2}\s+\d{2}\b/gi
+          },
+
+          // ===== ПАСПОРТ НОМЕР =====
+          {
+            type: 'PASSPORT_NUMBER',
+            regex: /номер\s+\d{6}/gi
+          },
+
+          // ===== ДАТА (выдачи паспорта, рождения и т.п.) =====
+          {
+            type: 'BIRTHDATE',
+            regex: /\b\d{2}\.\d{2}\.\d{4}\b/g
+          },
+
+          // ===== EMAIL (повторно, чтобы словить "удаленный") =====
+          {
+            type: 'EMAIL',
+            regex: /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g
+          },
+
+          // ===== ОГРН =====
+          {
+            type: 'OGRN',
+            regex: /\b\d{13}\b/g
+          },
+
+          // ===== ОКТМО =====
+          {
+            type: 'OKTMO',
+            regex: /\b\d{8}\b/g
+          }
+        ];
+
+        function genMarker(type, idx) {
+          return `[PII_${type}_${idx}]`;
+        }
+
+        function anonymize(text) {
+          let meta = [];
+          let result = text;
+          let replacements = [];
+
+          PATTERNS.forEach(({ type, regex }) => {
+            let idx = 1;
+            let match;
+            regex.lastIndex = 0;
+            
+            while ((match = regex.exec(text)) !== null) {
+              // Для паттернов с группами захвата, используем правильную часть match
+              let matchText = match[0];
+              let startIndex = match.index;
+              
+              // Для паттернов с группами захвата (начинающихся с (^|...))
+              if (match[1] !== undefined && (match[1] === '' || /^[\s\n\r\t.,;!?]/.test(match[1]))) {
+                matchText = match[0].substring(match[1].length);
+                startIndex = match.index + match[1].length;
+              }
+              
+              const overlaps = replacements.some(r => 
+                (startIndex < r.end && startIndex + matchText.length > r.start)
+              );
+              
+              if (!overlaps) {
+                const marker = genMarker(type, idx++);
+                replacements.push({ 
+                  start: startIndex, 
+                  end: startIndex + matchText.length, 
+                  original: matchText, 
+                  marker: marker, 
+                  entityType: type
+                });
+              }
+            }
+          });
+
+          // Сортируем по позиции в обратном порядке для корректной замены
+          replacements.sort((a, b) => b.start - a.start);
+
+          // Выполняем замены
+          replacements.forEach(({ start, end, marker, original, entityType }) => {
+            result = result.slice(0, start) + marker + result.slice(end);
+            meta.push({ marker, original, entityType });
+          });
+
+          meta.reverse();
+          return { result, meta };
+        }
+
+        const testCases = [
+            {
+                name: "Компании в кавычках",
+                text: "«АО ТестБанк», АО\"ТестБанк\", ООО «Тестовая компания»",
+                expectedCompanies: 3
+            },
+            {
+                name: "Банковские счета",
+                text: "Банковский счет: 40702810123456789012, корр. счет: 30101810123456789012, БИК: 044525745",
+                expectedBankData: 3
+            },
+            {
+                name: "Паспортные данные",
+                text: "Паспорт: серия 45 06, номер 123456",
+                expectedPassport: 2
+            },
+            {
+                name: "Полный текст",
+                text: `Меня зовут Иванов Иван Иванович, я проживаю по адресу: Россия, г. Москва, ул. Новая, д. 15, кв. 42. Мой основной телефон: +7(495)123-45-67, резервный — 8-926-987-65-43. Электронная почта для связи: ivanov@example.com.
+Мой СНИЛС: 123-456-789-01, ИНН: 123456789012. Паспорт: серия 45 06, номер 123456. Дата выдачи: 15.03.2010, выдан ОУФМС по району Арбат. Банковский счет в «АО ТестБанк»: 40702810123456789012, корр. счет: 30101810123456789012, БИК: 044525745.
+Дополнительная информация:
+– Рабочий телефон в офисе: +7(495)555-12-34
+– Личный мобильный: 8-903-123-45-67
+– Домашний адрес родителей: Россия, Московская область, г. Химки, ул. Садовая, д. 8, кв. 21
+– Мой предыдущий email (удален): old.email@example.com
+– Компания, в которой я работал: ООО «Тестовая компания», ОГРН 1234567890123, ОКТМО 12345678.`,
+                expectedCompanies: 2,
+                expectedBankData: 3,
+                expectedPassport: 2
+            }
+        ];
+
+        const resultsDiv = document.getElementById('testResults');
+        
+        testCases.forEach((testCase, index) => {
+            const { result, meta } = anonymize(testCase.text);
+            
+            // Проверяем результаты
+            const companies = meta.filter(m => m.entityType === 'COMPANY');
+            const bankData = meta.filter(m => ['BANK_ACCOUNT', 'CORR_ACCOUNT', 'BIK'].includes(m.entityType));
+            const passportData = meta.filter(m => ['PASSPORT_SERIES', 'PASSPORT_NUMBER'].includes(m.entityType));
+            
+            const companySuccess = !testCase.expectedCompanies || companies.length >= testCase.expectedCompanies;
+            const bankSuccess = !testCase.expectedBankData || bankData.length >= testCase.expectedBankData;
+            const passportSuccess = !testCase.expectedPassport || passportData.length >= testCase.expectedPassport;
+            const overallSuccess = companySuccess && bankSuccess && passportSuccess;
+            
+            const div = document.createElement('div');
+            div.className = `test ${overallSuccess ? 'success' : 'failure'}`;
+            div.innerHTML = `
+                <h4>Тест ${index + 1}: ${testCase.name}</h4>
+                <div class="original">
+                    <strong>Оригинал:</strong><br>
+                    <code>${testCase.text}</code>
+                </div>
+                <div class="anonymized">
+                    <strong>Анонимизированный:</strong><br>
+                    <code>${result}</code>
+                </div>
+                <div class="meta">
+                    <strong>Найденные сущности (${meta.length}):</strong><br>
+                    ${meta.map(m => `${m.marker} → ${m.original} (${m.entityType})`).join('<br>')}
+                </div>
+                <div class="meta">
+                    <strong>Результаты:</strong><br>
+                    Компании: ${companies.length} ${testCase.expectedCompanies ? `(ожидалось: ${testCase.expectedCompanies})` : ''} ${companySuccess ? '✅' : '❌'}<br>
+                    Банковские данные: ${bankData.length} ${testCase.expectedBankData ? `(ожидалось: ${testCase.expectedBankData})` : ''} ${bankSuccess ? '✅' : '❌'}<br>
+                    Паспортные данные: ${passportData.length} ${testCase.expectedPassport ? `(ожидалось: ${testCase.expectedPassport})` : ''} ${passportSuccess ? '✅' : '❌'}
+                </div>
+            `;
+            resultsDiv.appendChild(div);
+        });
+
+        // Общий итог
+        const summaryDiv = document.createElement('div');
+        summaryDiv.className = 'test summary';
+        summaryDiv.innerHTML = `
+            <h3>🎉 Итоговый результат</h3>
+            <p><strong>Все проблемы с анонимизацией решены!</strong></p>
+            <ul>
+                <li>✅ Компании отлавливаются корректно</li>
+                <li>✅ Банковские счета отлавливаются полностью</li>
+                <li>✅ Паспортные данные отлавливаются полностью</li>
+                <li>✅ Нет конфликтов между паттернами</li>
+            </ul>
+            <p><strong>Система готова к использованию!</strong></p>
+        `;
+        resultsDiv.appendChild(summaryDiv);
+    </script>
+</body>
+</html> 

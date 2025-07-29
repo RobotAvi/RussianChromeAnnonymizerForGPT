@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Clipboard Anonymizer</title>
+  <style>
+    body{font-family:Arial,sans-serif;width:260px;padding:10px}
+    input,select,button{width:100%;margin-top:6px}
+    .section{margin-top:14px;font-weight:bold}
+    #status{margin-top:6px;color:green}
+  </style>
+</head>
+<body>
+  <div class="section">Анонимизация</div>
+  <input id="mapName" placeholder="Имя словаря">
+  <button id="anonBtn">Анонимизировать из буфера</button>
+
+  <div class="section">Деанонимизация</div>
+  <select id="mapSelect"></select>
+  <button id="deanonBtn">Деанонимизировать из буфера</button>
+
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
